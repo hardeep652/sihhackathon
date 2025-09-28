@@ -4,11 +4,12 @@ import re
 from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
+import plotly.express as px
 
 # Set the page configuration for a centered layout
 st.set_page_config(
-    page_title="Groundwater Chatbot", 
-    page_icon="💧", 
+    page_title="Groundwater Chatbot",
+    page_icon="💧",
     layout="wide"
 )
 
@@ -45,7 +46,7 @@ st.markdown("""
         border: none;
         color: white;
     }
-    
+
     .stButton > button:hover {
         background-color: #4b94ff;
     }
@@ -92,6 +93,9 @@ def load_data():
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
+        if "STAGE (%)" in df.columns:
+            df.rename(columns={"STAGE (%)": "STAGE"}, inplace=True)
+
         if "YEAR" in df.columns:
             df["YEAR"] = df["YEAR"].astype(str)
         else:
@@ -115,7 +119,7 @@ def create_index(df):
     for _, row in df.iterrows():
         desc = (f"{row['DISTRICT']}, {row['STATE']}, Year {row.get('YEAR','NA')}: "
                 f"Recharge {row['RECHARGE']}, Available {row['AVAILABLE']}, "
-                f"Extraction {row['EXTRACTION']}, Stage {row.get('STAGE (%)','NA')}")
+                f"Extraction {row['EXTRACTION']}, Stage {row.get('STAGE',0)}")
         texts.append(desc)
 
     embeddings = model.encode(texts, convert_to_numpy=True)
@@ -154,7 +158,38 @@ def basic_chat(query):
     return None
 
 # ------------------------------
-# 4️⃣ Answer generator
+# 4️⃣ New function for Visualization
+# ------------------------------
+def visualize_data(matched_district, df, y_column):
+    df_district = df[df["DISTRICT"] == matched_district]
+    
+    if df_district.empty:
+        return f"Sorry, no data available for {matched_district}."
+    
+    df_district = df_district.sort_values(by="YEAR")
+    
+    fig = px.line(
+        df_district,
+        x="YEAR",
+        y=y_column,
+        title=f"Groundwater {y_column} Comparison for {matched_district}",
+        labels={
+            "YEAR": "Year",
+            y_column: f"Groundwater {y_column}"
+        }
+    )
+    
+    fig.update_traces(mode='lines+markers', marker=dict(size=8))
+    fig.update_layout(
+        plot_bgcolor="#2b2b2b",
+        paper_bgcolor="#2b2b2b",
+        font_color="white",
+        title_font_size=20
+    )
+    return fig
+
+# ------------------------------
+# 5️⃣ Answer generator (updated)
 # ------------------------------
 def answer(query, model, index, texts, df):
     if df.empty:
@@ -165,14 +200,15 @@ def answer(query, model, index, texts, df):
         return basic
 
     q = query.upper()
-    year_match = re.findall(r"(20\d{2})", q)
-    year_query = year_match[0] if year_match else None
-
+    
     matched_district = None
     for d in df["DISTRICT"].unique():
         if d in q:
             matched_district = d
             break
+            
+    year_match = re.findall(r"(20\d{2})", q)
+    year_query = year_match[0] if year_match else None
 
     if matched_district:
         df_district = df[df["DISTRICT"] == matched_district]
@@ -187,8 +223,8 @@ def answer(query, model, index, texts, df):
                 f"💧 Recharge: {row['RECHARGE']} MCM  \n"
                 f"💦 Available: {row['AVAILABLE']} MCM  \n"
                 f"⚡ Extraction: {row['EXTRACTION']} MCM  \n"
-                f"🚨 Stage: {row.get('STAGE (%)','NA')}% "
-                f"({stage_category(row.get('STAGE (%)',0))})")
+                f"🚨 Stage: {row.get('STAGE',0)}% "
+                f"({stage_category(row.get('STAGE',0))})")
 
     query_vec = model.encode([query])
     D, I = index.search(query_vec, k=1)
@@ -200,22 +236,23 @@ def answer(query, model, index, texts, df):
             f"💧 Recharge: {row['RECHARGE']} MCM  \n"
             f"💦 Available: {row['AVAILABLE']} MCM  \n"
             f"⚡ Extraction: {row['EXTRACTION']} MCM  \n"
-            f"🚨 Stage: {row.get('STAGE (%)','NA')}% "
-            f"({stage_category(row.get('STAGE (%)',0))})")
+            f"🚨 Stage: {row.get('STAGE',0)}% "
+            f"({stage_category(row.get('STAGE',0))})")
 
 # ------------------------------
-# 5️⃣ Main UI Logic
+# 6️⃣ Main UI Logic
 # ------------------------------
-# Initialize session state for chat visibility and messages
+# Initialize session state for chat visibility, visualization, and messages
 if "chat_open" not in st.session_state:
     st.session_state.chat_open = False
+if "show_visualizations" not in st.session_state:
+    st.session_state.show_visualizations = False
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # Display either the landing page or the chat UI based on session state
 if not st.session_state.chat_open:
     # --- Landing Page with Content Card ---
-    # We combine the open and close markdown tags into a single block
     st.markdown(
         f"""
         <div class="content-card">
@@ -228,11 +265,18 @@ if not st.session_state.chat_open:
             <p><h3>Proposed Solution</h3>
             To improve accessibility, it is proposed to develop an AI-driven ChatBOT for INGRES.
             This intelligent virtual assistant will enable users to easily query groundwater data, access historical and current assessments, and obtain instant insights.</p>
+            <hr>
+            <h3> Prototype Features</h3>
+            <ul>
+                <li>Chatbot AI trained on 10+ years of groundwater data.</li>
+                <li>Instant, accurate responses to data queries.</li>
+                <li>Supports **interactive visualizations** for comparative analysis.</li>
+            </ul>
         </div>
         """,
         unsafe_allow_html=True
     )
-    
+
     # Button to open the chat
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("💬 Chat with AI", key="open_chat"):
@@ -242,36 +286,58 @@ if not st.session_state.chat_open:
 else:
     # --- Chatbot UI ---
     st.title("💧 Groundwater AI Chatbot")
-    
-    # Back button to close the chat
-    if st.button("⬅ Back to Problem Statement", key="close_chat"):
-        st.session_state.chat_open = False
-        st.rerun()
 
-    # Display chat history
-    for role, msg in st.session_state.messages:
-        with st.chat_message(role):
-            st.markdown(msg)
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("⬅ Back to Problem Statement", key="close_chat"):
+            st.session_state.chat_open = False
+            st.session_state.show_visualizations = False
+            st.rerun()
+    with col2:
+        if st.button("📊 Show Visualizations", key="show_viz_button"):
+            st.session_state.show_visualizations = not st.session_state.show_visualizations
 
-    # Get data and models
-    df = load_data()
-    model, index, texts, df_data = create_index(df)
+    if st.session_state.show_visualizations:
+        # --- Visualization Section ---
+        st.markdown("---")
+        st.subheader("Data Visualizations")
 
-    # Chat input box
-    if user_query := st.chat_input("Type your question..."):
-        # User message
-        st.session_state.messages.append(("user", user_query))
-        with st.chat_message("user"):
-            st.markdown(user_query)
+        df = load_data()
+        districts = sorted(df["DISTRICT"].unique())
+        data_types = ["RECHARGE", "AVAILABLE", "EXTRACTION", "STAGE"]
 
-        # Bot response
-        if df_data.empty:
-            result = "I am having trouble accessing the data. Please check the file path."
-        elif model and index:
-            result = answer(user_query, model, index, texts, df_data)
-        else:
-            result = "I am having trouble loading the AI model. Please try again later."
-            
-        st.session_state.messages.append(("assistant", result))
-        with st.chat_message("assistant"):
-            st.markdown(result)
+        selected_district = st.selectbox("Select a District", districts)
+        selected_data_type = st.selectbox("Select a Data Type", data_types)
+
+        if st.button(f"Generate Graph for {selected_district}", key="generate_viz_btn"):
+            fig = visualize_data(selected_district, df, selected_data_type)
+            if isinstance(fig, str):
+                st.warning(fig)
+            else:
+                st.plotly_chart(fig, use_container_width=True)
+    else:
+        # --- Chat History Display ---
+        for role, msg in st.session_state.messages:
+            with st.chat_message(role):
+                st.markdown(msg)
+
+        # Get data and models
+        df = load_data()
+        model, index, texts, df_data = create_index(df)
+
+        # Chat input box
+        if user_query := st.chat_input("Type your question..."):
+            st.session_state.messages.append(("user", user_query))
+            with st.chat_message("user"):
+                st.markdown(user_query)
+
+            if df_data.empty:
+                result = "I am having trouble accessing the data. Please check the file path."
+            elif model and index:
+                result = answer(user_query, model, index, texts, df_data)
+            else:
+                result = "I am having trouble loading the AI model. Please try again later."
+
+            st.session_state.messages.append(("assistant", result))
+            with st.chat_message("assistant"):
+                st.markdown(result)
